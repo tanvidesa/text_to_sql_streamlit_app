@@ -1,52 +1,37 @@
 import streamlit as st
+from database import execute_sql_query
+from llm_sql_generator import get_sql_query_from_nl
+from graph_generator import generate_graph_if_needed, generate_pie_chart
 import os
 
-import plotly.express as px
-import sqlite3
-import pandas as pd
-openai.api_key = os.getenv("OPENAI_API_KEY")
-st.title("🧠 Text-to-SQL Query App")
-#  User Input
-user_question = st.text_input("Ask a question in English:")
-def ask_llm(question):
-    prompt = f"""
-    Convert this English question into an SQL query using SQLite format (Chinook DB):
-    Question: {question}
-    SQL:"""
+st.set_page_config(layout="wide")
+st.title("Text-to-SQL App with Graph Support")
 
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
+user_query = st.text_input("Ask your question (e.g., 'Show me total sales by artist')")
 
-    sql = response['choices'][0]['message']['content']
-    return sql.strip().strip("```sql").strip("```")
-def run_sql(sql):
-    conn = sqlite3.connect("chinook.db")
-    df = pd.read_sql_query(sql, conn)
-    conn.close()
-    return df
-def detect_graph_need(question):
-    keywords = ["trend", "over time", "compare", "distribution", "chart", "graph", "visualize", "plot"]
-    return any(kw in question.lower() for kw in keywords)
-def plot_graph(df):
-    if df.shape[1] < 2:
-        return None
-    col1, col2 = df.columns[:2]
-    fig = px.bar(df, x=col1, y=col2, title="Bar Chart")
-    st.plotly_chart(fig)
-if st.button("Generate"):
-    if user_question:
-        with st.spinner("Thinking..."):
-            sql_query = ask_llm(user_question)
-            st.code(sql_query, language='sql')
-            try:
-                data = run_sql(sql_query)
-                st.dataframe(data)
+if st.button("Run"):
+    if user_query:
+        with st.spinner("Generating SQL..."):
+            sql_query = get_sql_query_from_nl(user_query)
+        st.code(sql_query, language="sql")
 
-                if detect_graph_need(user_question):
-                    plot_graph(data)
-            except Exception as e:
-                st.error(f"Error running query: {e}")
+        results, columns = execute_sql_query(sql_query)
+        if results is not None and not results.empty:
+            col1, col2 = st.columns([2, 2])
+            with col1:
+                st.subheader("Query Results")
+                st.dataframe(results, use_container_width=True)
 
+            chart_data = generate_graph_if_needed(user_query, results, columns)
+            if chart_data:
+                chart_type, x_vals, y_vals = chart_data
+                with col2:
+                    st.subheader("Graph")
+                    if chart_type == "bar":
+                        st.bar_chart({"x": x_vals, "y": y_vals})
+                    elif chart_type == "line":
+                        st.line_chart({"x": x_vals, "y": y_vals})
+                    elif chart_type == "pie":
+                        st.plotly_chart(generate_pie_chart(x_vals, y_vals))
+        else:
+            st.error(f"No results or error: {columns}")
